@@ -49,8 +49,9 @@ Ensure you have the following dependencies installed on your host system:
 This project is licensed under the **Creative Commons** License.
 
 ---
-**Maintained by**: Gabriel (Gabu) Salvador & André (Magrão) Borali.
-**Code Review**: Gemini 3.1 Pro.
-**Original project by**: Daniel Gibbs
-**Visit**: https://linuxgsm.com/
+**Maintained by**: Gabriel (Gabu) Salvador & André (Magrão) Borali.  
+**Code Review**: Gemini 3.1 Pro.  
+  
+**Original project by**: Daniel Gibbs  
+**Visit**: https://linuxgsm.com/  
 **Repo**: https://github.com/GameServerManagers/LinuxGSM

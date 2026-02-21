@@ -7,21 +7,19 @@
 # André (Magrão) Borali                                              #
 # andreborali at gmail.com                                           #
 #                                                                    #
-# Date: 2024-04-19                                                   #
+# Reviewed by: Google Gemini 3.1 Pro                                 #
 #                                                                    #
-#                                                                    #
+# Date: 2026-02-21                                                   #
 #                                                                    #
 # Unofficial script to create a LinuxGSM container                   #
 # License: Creative Commons                                          #
 ######################################################################
 
-
-
 ######################################################################
 #                          GLOBAL VARIABLES                          #
 ######################################################################
 
-declare -gr VERSION="0.2"
+declare -gr VERSION="0.3"
 declare -gr oIFS="$IFS"
 
 declare -gi VOLUME
@@ -36,6 +34,8 @@ declare -g USERTCP
 declare -g USERUDP
 declare -g TCPPORTS
 declare -g UDPPORTS
+declare -g LOCAL_DIR
+declare -g VOL_STR
 
 ######################################################################
 #                             FUNCTIONS                              #
@@ -76,14 +76,14 @@ function fn_srvlist() # Process the server list data
 
 function fn_menu() # Create the menu
 {
-	## Process the server list data
 	declare GAMESLIST; GAMESLIST=$(fn_srvlist)
 
 	IFS="¦"
 	GAME=$(whiptail --menu "Choose a game:" --title "LinuxGSM v${VERSION}" 30 60 22 ${GAMESLIST} 3>&1 1>&2 2>&3)
+	declare -i WHIP_STATUS=$?
 	IFS="$oIFS"
-	if [[ -z ${GAME} ]]; then
-		printf "\n%sYou must choose a game.%s\n" "${RED}" "${NC}"
+	if [[ $WHIP_STATUS -ne 0 || -z ${GAME} ]]; then
+		printf "\n%sOperation canceled or no game selected. Exiting...%s\n" "${RED}" "${NC}"
 		exit 1
 	fi
 
@@ -161,7 +161,7 @@ function fn_ports() # Arrange TCP and/or UDP port(s)
 
 clear
 
-## Check for dependencies
+# Check for dependencies
 fn_depcheck "docker" "wget" "whiptail" "wc" "tr"
 
 # Get the latest LinuxGSM server list from GitHub
@@ -173,44 +173,74 @@ fi
 # Remove the header from server list
 sed -i '1d' /tmp/serverlist.csv
 
-## Create the menu
+# Create the menu
 fn_menu
 
 # Remove server list temp file
 rm /tmp/serverlist.csv
 
-# Check if game server already exists
-if docker container ls | grep lgsm-"${GAME}"server > /dev/null 2>&1; then
-	printf "\n%sWARNING!!!%s\n\nGame server %s already exists.\nPlease, select another game.\n" "${RED}" "${NC}" "${GAME}"
+# Check if game server container already exists
+if docker container ls -a | grep -q lgsm-"${GAME}"server; then
+	printf "\n%sWARNING!!!%s\n\nGame server %s already exists in Docker.\nPlease, select another game or remove the existing container.\n" "${RED}" "${NC}" "${GAME}"
 	exit 1
 fi
-if docker volume ls | grep lgsm-"${GAME}"server > /dev/null 2>&1; then
-	printf "\n%sWARNING!!!%s\n\nThere is already a repository for %s.\nType %sYES%s if you want to use it: " "${RED}" "${NC}" "${GAME}" "${BLUE}" "${NC}"
-	read -r
-	if [[ $REPLY != "YES" ]]; then
-		printf "\n%sExiting...%s\n" "${GREEN}" "${NC}"
-		exit 0
-	fi
-	printf "\n%sUsing existing repository...%s\n" "${GREEN}" "${NC}"
-	VOLUME=1
+
+# Use or create a Docker volume or a local host folder
+if docker volume ls | grep -q lgsm-"${GAME}"server; then
+	CHOICE=$(whiptail --title "Volume Strategy" --menu "A Docker repository for ${GAME} already exists. How to proceed?" 15 65 2 \
+	"1" "Use existing Docker Volume" \
+	"2" "Use a LOCAL Host Folder" 3>&1 1>&2 2>&3)
 else
-	VOLUME=0
+	CHOICE=$(whiptail --title "Volume Strategy" --menu "How would you like to store the server files?" 15 65 2 \
+	"0" "Create a NEW Docker Volume" \
+	"2" "Use a LOCAL Host Folder" 3>&1 1>&2 2>&3)
 fi
+
+# Exit if user hits Cancel in the volume menu
+if [[ $? -ne 0 ]]; then
+	printf "\n%sCanceled by user. Exiting...%s\n" "${RED}" "${NC}"
+	exit 1
+fi
+
+# Check user's choice and prepare the local folder if needed
+case $CHOICE in
+	0) VOLUME=0 ;;
+	1) VOLUME=1 ;;
+	2) VOLUME=2
+		LOCAL_DIR=$(whiptail --title "Local Directory" --inputbox "Enter the ABSOLUTE path on your host (e.g., /home/$USER/lgsm-$GAME):" 10 70 3>&1 1>&2 2>&3)
+		if [[ $? -ne 0 || -z "$LOCAL_DIR" ]]; then 
+			printf "\n%sInvalid path or canceled. Aborting...%s\n" "${RED}" "${NC}"
+			exit 1
+		fi
+		mkdir -p "$LOCAL_DIR" 2>/dev/null
+		if [[ $? -ne 0 ]]; then
+			printf "\n%sError: Could not create directory %s. Please, check your permissions.%s\n" "${RED}" "${LOCAL_DIR}" "${NC}"
+			exit 1
+		fi
+		;;
+	*) printf "\n%sExiting...%s\n" "${RED}" "${NC}"; exit 1 ;;
+esac
 
 # Get the TCP port(s) to be exposed
 USERTCP=$(whiptail --title "LinuxGSM v${VERSION}" --inputbox \
-"Please, enter the TCP Ports to be exposed or leave empty if none.\nSeparate multiple ports with spaces.\nUse a dash for ranges.\n\ne.g.: 27015 27020-27030 30000" \
-12 70 3>&1 1>&2 2>&3)
+"Please, enter the TCP Ports to be exposed or leave empty if none.\nSeparate multiple ports with spaces.\nUse a dash for ranges.\n\ne.g.: 27015 27020-27030 30000" 12 70 3>&1 1>&2 2>&3)
+if [[ $? -ne 0 ]]; then
+	printf "\n%sCanceled. Exiting...%s\n" "${RED}" "${NC}"
+	exit 1
+fi
 
-## Check if variable has a valid string
+# Check if variable has a valid string
 fn_varcheck "${USERTCP}"
 
 # Get the UDP port(s) to be exposed
 USERUDP=$(whiptail --title "LinuxGSM v${VERSION}" --inputbox \
-"Now, enter the UDP Ports to be exposed or leave empty if none.\nSame as before: Separate multiple ports with spaces\nand a dash for ranges.\n\ne.g.: 27015 27020-27030 30000" \
-12 70 3>&1 1>&2 2>&3)
+"Now, enter the UDP Ports to be exposed or leave empty if none.\nSame as before: Separate multiple ports with spaces\nand a dash for ranges.\n\ne.g.: 27015 27020-27030 30000" 12 70 3>&1 1>&2 2>&3)
+if [[ $? -ne 0 ]]; then
+	printf "\n%sCanceled. Exiting...%s\n" "${RED}" "${NC}"
+	exit 1
+fi
 
-## Check if variable has a valid string
+# Check if variable has a valid string
 fn_varcheck "${USERUDP}"
 
 # Check if both variables are not empty
@@ -219,25 +249,43 @@ if [[ -z ${USERTCP} && -z ${USERUDP} ]]; then
 	exit 1
 fi
 
-## Arrange TCP and/or UDP port(s)
+# Arrange TCP and/or UDP port(s)
 fn_ports
 
 # Create the container
 if (whiptail --title "LinuxGSM v${VERSION}" --yesno "Ready to create a container named ${GAME}.\nProceed?" 10 60); then
 	printf "\nI will create the %s%s%s container.\nPlease wait, this may take a while.\n" "${GREEN}" "${GAME}" "${NC}"
+	# Prepare the volume string based on strategy
 	if [[ "${VOLUME}" == "0" ]]; then
-		printf "\nCreating Docker volume %s to store your game files...\n" "${GAME}"
+		printf "\nCreating Docker volume lgsm-%sserver to store your game files...\n" "${GAME}"
 		docker volume create lgsm-"${GAME}"server > /dev/null 2>&1
-		printf "%sDone.%s\n" "${GREEN}" "${NC}"
+		VOL_STR="-v lgsm-${GAME}server:/data"
 	elif [[ "${VOLUME}" == "1" ]]; then
-		printf "\nUsing Docker volume %s previously created.\n" "${GAME}"
+		printf "\nUsing Docker volume lgsm-%sserver previously created.\n" "${GAME}"
+		VOL_STR="-v lgsm-${GAME}server:/data"
+	elif [[ "${VOLUME}" == "2" ]]; then
+		printf "\nUsing Local Host Directory: %s\n" "${LOCAL_DIR}"
+		VOL_STR="-v \"${LOCAL_DIR}:/data\""
 	fi
 	printf "\nCreating Docker container %s...\n" "${GAME}"
-	eval docker run -d --init -h "${GAME}" --name lgsm-"${GAME}"server --restart unless-stopped -v lgsm-"${GAME}"server:/data "${TCPPORTS}" "${UDPPORTS}" \
-	gameservermanagers/gameserver:"${GAME}" > /dev/null 2>&1
-	printf "%sDone.%s\n" "${GREEN}" "${NC}"
+	# Create a temporary file to capture Docker output/errors
+	TMP_DOCKER_OUT=$(mktemp)
+	# Run the container and check for success
+	if eval docker run -d --init -h "${GAME}" --name lgsm-"${GAME}"server --restart unless-stopped ${VOL_STR} "${TCPPORTS}" "${UDPPORTS}" gameservermanagers/gameserver:"${GAME}" > "${TMP_DOCKER_OUT}" 2>&1; then
+		printf "%sDone.%s\n" "${GREEN}" "${NC}"
+	else
+		printf "\n%sERROR: Container creation failed!%s\n" "${RED}" "${NC}"
+		# Show the exact Docker error to the user via whiptail
+		whiptail --title "Docker Error" --msgbox "Failed to create or start the container.\nThis usually happens if a port is already in use.\n\nDocker output:\n$(cat ${TMP_DOCKER_OUT})" 15 75
+		# Cleanup: Remove the dead container if it was partially created
+		docker rm -f lgsm-"${GAME}"server > /dev/null 2>&1
+		rm -f "${TMP_DOCKER_OUT}"
+		exit 1
+	fi
+	rm -f "${TMP_DOCKER_OUT}"
 else
 	printf "\nAborting...\n"
+	exit 1
 fi
 
 exit 0

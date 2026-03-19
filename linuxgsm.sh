@@ -19,7 +19,7 @@
 #                          GLOBAL VARIABLES                          #
 ######################################################################
 
-declare -gr VERSION="0.3"
+declare -gr VERSION="0.4"
 declare -gr oIFS="$IFS"
 
 declare -gi VOLUME

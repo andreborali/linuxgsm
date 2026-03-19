@@ -93,35 +93,74 @@ function fn_menu() # Create the menu
 function fn_varcheck() # Check if variable has a valid string
 {
 	declare USERPORTS="$1"
-	declare -a PORTRANGE
+	declare -a TOKENS
+	declare -a RANGE_PARTS
 	declare -a PORTLIST
 	declare -a RANGETEMP
 	declare PORTTEST
+	declare HOSTPART
+	declare CONTPART
 
 	if [[ -n "${USERPORTS}" ]]; then
-		if [[ ! ${USERPORTS} =~ ^([0-9]{1,5}\-[0-9]{1,5}|[0-9]{1,5})(\ ([0-9]{1,5}\-[0-9]{1,5}|[0-9]{1,5}))*$ ]]; then
-			printf "\n%sSorry, invalid format.\nIt must be like this: 27015 27020-27030 30000%s\n" "${RED}" "${NC}"
-			exit 1
-		fi
-		IFS=' ' read -r -a PORTRANGE <<< "${USERPORTS}"
-		USERPORTS=$(echo "${USERPORTS}" | tr "-" " ")
-		IFS=' ' read -r -a PORTLIST <<< "${USERPORTS}"
-		for PORTTEST in "${PORTLIST[@]}"; do
-			if [[ ! ${PORTTEST} =~ [0-9]{4,5} ]]; then
-				printf "\n%sPort(s) must be higher than 1024 and lower than 49151.%s\n" "${RED}" "${NC}"
+		# Accept formats like: 27015 | 7777:27015 | 0.0.0.0:7777:27015
+		# Also allow ranges: 27015-27030 or 7777-7780:27015-27018
+		# Support Docker-style "->" and optional /tcp or /udp suffixes.
+		USERPORTS=$(echo "${USERPORTS}" | sed -E 's/->/:/g' | sed -E 's/\/(tcp|udp)//g')
+
+		IFS=' ' read -r -a TOKENS <<< "${USERPORTS}"
+		for PORTTEST in "${TOKENS[@]}"; do
+			# Split host/container parts if provided
+			IFS=':' read -r -a RANGE_PARTS <<< "${PORTTEST}"
+			if [[ ${#RANGE_PARTS[@]} -eq 1 ]]; then
+				HOSTPART="${RANGE_PARTS[0]}"
+				CONTPART="${RANGE_PARTS[0]}"
+			elif [[ ${#RANGE_PARTS[@]} -eq 2 ]]; then
+				HOSTPART="${RANGE_PARTS[0]}"
+				CONTPART="${RANGE_PARTS[1]}"
+			elif [[ ${#RANGE_PARTS[@]} -eq 3 ]]; then
+				# IP:host:container notation
+				HOSTPART="${RANGE_PARTS[1]}"
+				CONTPART="${RANGE_PARTS[2]}"
+			else
+				printf "\n%sSorry, invalid format.\nUse host:container or just the port number.%s\n" "${RED}" "${NC}"
 				exit 1
 			fi
-			if [[ ${PORTTEST} -lt 1025 || ${PORTTEST} -gt 49150 ]]; then
-				printf "\n%sPort(s) must be higher than 1024 and lower than 49151.%s\n" "${RED}" "${NC}"
-				exit 1
-			fi
-		done
-		for PORTTEST in "${PORTRANGE[@]}"; do
-			if [[ ${PORTTEST} =~ \- ]]; then
-				PORTTEST=$(echo "${PORTTEST}" | tr "-" " ")
-				IFS=' ' read -r -a RANGETEMP <<< "${PORTTEST}"
-				if [[ "${RANGETEMP[0]}" -ge "${RANGETEMP[1]}" ]]; then
+
+			# Validate the host and container port ranges individually
+			for PORTTEST in "${HOSTPART}" "${CONTPART}"; do
+				if [[ ! ${PORTTEST} =~ ^[0-9]{1,5}(-[0-9]{1,5})?$ ]]; then
+					printf "\n%sSorry, invalid port format.\nIt must be like: 27015 or 7777:27015 or 27020-27030%s\n" "${RED}" "${NC}"
+					exit 1
+				fi
+
+				PORTLIST=()
+				if [[ ${PORTTEST} =~ - ]]; then
+					PORTLIST=(${PORTTEST//-/ })
+				else
+					PORTLIST=("${PORTTEST}")
+				fi
+
+				for PORTTEST in "${PORTLIST[@]}"; do
+					if [[ ${PORTTEST} -lt 1025 || ${PORTTEST} -gt 49150 ]]; then
+						printf "\n%sPort(s) must be higher than 1024 and lower than 49151.%s\n" "${RED}" "${NC}"
+						exit 1
+					fi
+				done
+
+				if [[ ${#PORTLIST[@]} -eq 2 && ${PORTLIST[0]} -ge ${PORTLIST[1]} ]]; then
 					printf "\n%sIn a port range, the first value must be lower than the second.%s\n" "${RED}" "${NC}"
+					exit 1
+				fi
+			done
+
+			# If both sides are ranges, ensure they have the same size.
+			if [[ "${HOSTPART}" =~ - && "${CONTPART}" =~ - ]]; then
+				IFS='-' read -r -a RANGETEMP <<< "${HOSTPART}"
+				declare -i HOST_LEN=$((RANGETEMP[1] - RANGETEMP[0]))
+				IFS='-' read -r -a RANGETEMP <<< "${CONTPART}"
+				declare -i CONT_LEN=$((RANGETEMP[1] - RANGETEMP[0]))
+				if [[ ${HOST_LEN} -ne ${CONT_LEN} ]]; then
+					printf "\n%sWhen mapping port ranges, both sides must have the same size.%s\n" "${RED}" "${NC}"
 					exit 1
 				fi
 			fi
@@ -136,18 +175,35 @@ function fn_ports() # Arrange TCP and/or UDP port(s)
 	declare -a PORTARRAY
 	declare -i Y=0
 	declare -i Z=0
+	declare TOKEN
 
 	if [[ -n "${USERTCP}" ]]; then
 		IFS=' ' read -r -a PORTARRAY <<< "${USERTCP}"
 		while [ "$Y" -lt "${#PORTARRAY[@]}" ]; do
-			TCPPORTS="$TCPPORTS -p ${PORTARRAY[$Y]}:${PORTARRAY[$Y]}/tcp"
+			TOKEN="${PORTARRAY[$Y]}"
+			TOKEN="${TOKEN%/tcp}"
+			TOKEN="${TOKEN%/udp}"
+			TOKEN="${TOKEN//->/:}"
+			if [[ "${TOKEN}" =~ : ]]; then
+				TCPPORTS="$TCPPORTS -p ${TOKEN}/tcp"
+			else
+				TCPPORTS="$TCPPORTS -p ${TOKEN}:${TOKEN}/tcp"
+			fi
 			(( Y++ )) || true
 		done
 	fi
 	if [[ -n "${USERUDP}" ]]; then
 		IFS=' ' read -r -a PORTARRAY <<< "${USERUDP}"
 		while [ "$Z" -lt "${#PORTARRAY[@]}" ]; do
-			UDPPORTS="$UDPPORTS -p ${PORTARRAY[$Z]}:${PORTARRAY[$Z]}/udp"
+			TOKEN="${PORTARRAY[$Z]}"
+			TOKEN="${TOKEN%/tcp}"
+			TOKEN="${TOKEN%/udp}"
+			TOKEN="${TOKEN//->/:}"
+			if [[ "${TOKEN}" =~ : ]]; then
+				UDPPORTS="$UDPPORTS -p ${TOKEN}/udp"
+			else
+				UDPPORTS="$UDPPORTS -p ${TOKEN}:${TOKEN}/udp"
+			fi
 			(( Z++ )) || true
 		done
 	fi
@@ -223,7 +279,7 @@ esac
 
 # Get the TCP port(s) to be exposed
 USERTCP=$(whiptail --title "LinuxGSM v${VERSION}" --inputbox \
-"Please, enter the TCP Ports to be exposed or leave empty if none.\nSeparate multiple ports with spaces.\nUse a dash for ranges.\n\ne.g.: 27015 27020-27030 30000" 12 70 3>&1 1>&2 2>&3)
+"Enter TCP port mappings to expose (host:container). Leave empty if none.\nSeparate multiple entries with spaces.\nUse a dash for ranges (same length on both sides).\n\ne.g.: 27015 7777:27015 0.0.0.0:7777:27015 27020-27030" 12 70 3>&1 1>&2 2>&3)
 if [[ $? -ne 0 ]]; then
 	printf "\n%sCanceled. Exiting...%s\n" "${RED}" "${NC}"
 	exit 1
@@ -234,7 +290,7 @@ fn_varcheck "${USERTCP}"
 
 # Get the UDP port(s) to be exposed
 USERUDP=$(whiptail --title "LinuxGSM v${VERSION}" --inputbox \
-"Now, enter the UDP Ports to be exposed or leave empty if none.\nSame as before: Separate multiple ports with spaces\nand a dash for ranges.\n\ne.g.: 27015 27020-27030 30000" 12 70 3>&1 1>&2 2>&3)
+"Now, enter UDP port mappings to expose (host:container). Leave empty if none.\nSeparate multiple entries with spaces.\nUse a dash for ranges (same length on both sides).\n\ne.g.: 27015 7777:27015 27020-27030" 12 70 3>&1 1>&2 2>&3)
 if [[ $? -ne 0 ]]; then
 	printf "\n%sCanceled. Exiting...%s\n" "${RED}" "${NC}"
 	exit 1
@@ -271,7 +327,9 @@ if (whiptail --title "LinuxGSM v${VERSION}" --yesno "Ready to create a container
 	# Create a temporary file to capture Docker output/errors
 	TMP_DOCKER_OUT=$(mktemp)
 	# Run the container and check for success
-	if eval docker run -d --init -h "${GAME}" --name lgsm-"${GAME}"server --restart unless-stopped ${VOL_STR} "${TCPPORTS}" "${UDPPORTS}" gameservermanagers/gameserver:"${GAME}" > "${TMP_DOCKER_OUT}" 2>&1; then
+	DOCKER_CMD="docker run -d --init -h \"${GAME}\" --name lgsm-${GAME}server --restart unless-stopped ${VOL_STR} ${TCPPORTS} ${UDPPORTS} gameservermanagers/gameserver:\"${GAME}\""
+	printf "\n%s\n" "Command: ${DOCKER_CMD}"
+	if eval "${DOCKER_CMD}" > "${TMP_DOCKER_OUT}" 2>&1; then
 		printf "%sDone.%s\n" "${GREEN}" "${NC}"
 	else
 		printf "\n%sERROR: Container creation failed!%s\n" "${RED}" "${NC}"

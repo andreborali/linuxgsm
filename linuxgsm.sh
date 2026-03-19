@@ -19,7 +19,7 @@
 #                          GLOBAL VARIABLES                          #
 ######################################################################
 
-declare -gr VERSION="0.4"
+declare -gr VERSION="0.5"
 declare -gr oIFS="$IFS"
 
 declare -gi VOLUME
@@ -34,8 +34,7 @@ declare -g USERTCP
 declare -g USERUDP
 declare -g TCPPORTS
 declare -g UDPPORTS
-declare -g LOCAL_DIR
-declare -g VOL_STR
+declare -g CONTAINER_NAME
 
 ######################################################################
 #                             FUNCTIONS                              #
@@ -308,9 +307,27 @@ fi
 # Arrange TCP and/or UDP port(s)
 fn_ports
 
+# Ask for custom container name
+DEFAULT_NAME="lgsm-${GAME}server"
+CONTAINER_NAME=$(whiptail --title "LinuxGSM v${VERSION}" --inputbox \
+"Enter the container name (leave empty for default):\n\nDefault: ${DEFAULT_NAME}" 10 70 "${DEFAULT_NAME}" 3>&1 1>&2 2>&3)
+if [[ $? -ne 0 ]]; then
+	printf "\n%sCanceled. Exiting...%s\n" "${RED}" "${NC}"
+	exit 1
+fi
+if [[ -z "${CONTAINER_NAME}" ]]; then
+	CONTAINER_NAME="${DEFAULT_NAME}"
+fi
+
+# Check if container name already exists
+if docker container ls -a --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+	printf "\n%sWARNING!!!%s\n\nContainer name '%s' already exists in Docker.\nPlease, choose another name.\n" "${RED}" "${NC}" "${CONTAINER_NAME}"
+	exit 1
+fi
+
 # Create the container
-if (whiptail --title "LinuxGSM v${VERSION}" --yesno "Ready to create a container named ${GAME}.\nProceed?" 10 60); then
-	printf "\nI will create the %s%s%s container.\nPlease wait, this may take a while.\n" "${GREEN}" "${GAME}" "${NC}"
+if (whiptail --title "LinuxGSM v${VERSION}" --yesno "Ready to create a container named ${CONTAINER_NAME}.\nProceed?" 10 60); then
+	printf "\nI will create the %s%s%s container.\nPlease wait, this may take a while.\n" "${GREEN}" "${CONTAINER_NAME}" "${NC}"
 	# Prepare the volume string based on strategy
 	if [[ "${VOLUME}" == "0" ]]; then
 		printf "\nCreating Docker volume lgsm-%sserver to store your game files...\n" "${GAME}"
@@ -323,7 +340,7 @@ if (whiptail --title "LinuxGSM v${VERSION}" --yesno "Ready to create a container
 		printf "\nUsing Local Host Directory: %s\n" "${LOCAL_DIR}"
 		VOL_STR="-v \"${LOCAL_DIR}:/data\""
 	fi
-	printf "\nCreating Docker container %s...\n" "${GAME}"
+	printf "\nCreating Docker container %s...\n" "${CONTAINER_NAME}"
 	# Create a temporary file to capture Docker output/errors
 	TMP_DOCKER_OUT=$(mktemp)
 	# Run the container and check for success
@@ -336,7 +353,7 @@ if (whiptail --title "LinuxGSM v${VERSION}" --yesno "Ready to create a container
 		# Show the exact Docker error to the user via whiptail
 		whiptail --title "Docker Error" --msgbox "Failed to create or start the container.\nThis usually happens if a port is already in use.\n\nDocker output:\n$(cat ${TMP_DOCKER_OUT})" 15 75
 		# Cleanup: Remove the dead container if it was partially created
-		docker rm -f lgsm-"${GAME}"server > /dev/null 2>&1
+		docker rm -f "${CONTAINER_NAME}" > /dev/null 2>&1
 		rm -f "${TMP_DOCKER_OUT}"
 		exit 1
 	fi

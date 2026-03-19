@@ -179,9 +179,9 @@ fn_menu
 # Remove server list temp file
 rm /tmp/serverlist.csv
 
-# Check if game server container already exists
-if docker container ls -a | grep -q lgsm-"${GAME}"server; then
-	printf "\n%sWARNING!!!%s\n\nGame server %s already exists in Docker.\nPlease, select another game or remove the existing container.\n" "${RED}" "${NC}" "${GAME}"
+# Check if a container based on this game image already exists
+if [[ -n "$(docker ps -a --filter "ancestor=gameservermanagers/gameserver:${GAME}" -q)" ]]; then
+	printf "\n%sWARNING!!!%s\n\nA container based on image gameservermanagers/gameserver:%s already exists in Docker.\nPlease, select another game or remove the existing container.\n" "${RED}" "${NC}" "${GAME}"
 	exit 1
 fi
 
